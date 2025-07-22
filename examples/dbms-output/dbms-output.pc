@@ -1,0 +1,92 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <ctype.h> // For isspace()
+
+#ifdef __CYGWIN__
+#include <sqlca.h>
+#else
+// EXEC SQL INCLUDE SQLCA;
+#endif
+
+void sql_check(const char *msg);
+char *rtrim(char *str);
+
+int main() {
+
+    EXEC SQL BEGIN DECLARE SECTION;
+    const char *connect = getenv("CONNECT");
+    EXEC SQL END DECLARE SECTION;
+
+    if (!connect) {
+        fprintf(stderr, "CONNECT environment variable not set.\n");
+        return 1;
+    }
+
+    EXEC SQL CONNECT :connect;
+    sql_check("CONNECT");
+
+    // Enable DBMS_OUTPUT
+    EXEC SQL EXECUTE BEGIN dbms_output.enable(NULL); END; END-EXEC;
+    sql_check("dbms_output.enable");
+
+    // Call dbms_output.put_line
+    EXEC SQL EXECUTE BEGIN dbms_output.put_line('Hello from Pro*C!'); END; END-EXEC;
+    sql_check("dbms_output.put_line");
+
+    // Prepare to fetch output
+    EXEC SQL BEGIN DECLARE SECTION;
+    char line[32767];
+    short line_ind = 0; // Used to check if the line is NULL
+    int status;
+    EXEC SQL END DECLARE SECTION;
+
+    EXEC SQL WHENEVER SQLERROR DO sql_check("dbms_output.get_line");
+
+    printf("DBMS_OUTPUT:\n");
+
+    do {
+        EXEC SQL EXECUTE
+            BEGIN
+                dbms_output.get_line(:line:line_ind, :status);
+            END;
+        END-EXEC;
+        sql_check("dbms_output.get_line");
+
+        if (line_ind < 0) {
+            // If line_ind is negative, it means the line is NULL
+            status = -1; // Set status to -1 to indicate no output
+        } else {
+            status = 0; // Set status to 0 to indicate valid output
+        }
+
+        if (status == 0)
+            printf("%s\n", rtrim(line));
+
+    } while (status == 0);
+
+    EXEC SQL COMMIT WORK RELEASE;
+
+    return 0;
+}
+
+void sql_check(const char *msg) {
+    if (sqlca.sqlcode != 0) {
+        fprintf(stderr, "%s failed: ORA-%d: %.*s\n", msg, sqlca.sqlcode, sqlca.sqlerrm.sqlerrml, sqlca.sqlerrm.sqlerrmc);
+        exit(1);
+    }
+}
+
+char* rtrim(char *str) {
+    int i = strlen(str) - 1; // Start from the end of the string
+
+    // Loop backwards while characters are whitespace and within string bounds
+    while (i >= 0 && isspace((unsigned char)str[i])) {
+        i--;
+    }
+
+    // Place the null terminator after the last non-whitespace character
+    str[i + 1] = '\0';
+
+    return str;
+}

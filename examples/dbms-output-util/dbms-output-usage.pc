@@ -1,0 +1,111 @@
+/*
+ * dbms-output-usage.pc - Demonstration program for dbms_output_util
+ *
+ * This example connects using the CONNECT environment variable and
+ * showcases the various utility functions defined in dbms_output_util.pc.
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// EXEC SQL INCLUDE sqlca;
+#include <sqlca.h>
+
+/*
+ * Include the DBMS_OUTPUT helper functions directly so the Pro*C
+ * precompiler processes them along with this demo program.
+ */
+EXEC SQL INCLUDE dbms_output_util.pc;
+
+/* Simple helper to connect using CONNECT env variable */
+static void connect_db(void)
+{
+    EXEC SQL BEGIN DECLARE SECTION;
+    const char *connect = getenv("CONNECT");
+    EXEC SQL END DECLARE SECTION;
+
+    if (!connect) {
+        fprintf(stderr, "CONNECT environment variable not set.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    EXEC SQL CONNECT :connect;
+    dbms_output_check("CONNECT");
+}
+
+int main(void)
+{
+    /* Connect and enable DBMS_OUTPUT */
+    connect_db();
+    dbms_output_enable(0); /* unlimited buffer */
+
+    /* Generate some output via PL/SQL */
+    EXEC SQL EXECUTE BEGIN
+        dbms_output.put_line('Line 1');
+        dbms_output.put_line('Line 2');
+        dbms_output.put_line('Line 3');
+    END; END-EXEC;
+    dbms_output_check("put_line");
+
+    printf("-- Print to stdout --\n");
+    dbms_output_print_stdout();
+
+    /* Generate more output */
+    EXEC SQL EXECUTE BEGIN
+        dbms_output.put_line('Line A');
+        dbms_output.put_line('Line B');
+    END; END-EXEC;
+    dbms_output_check("put_line");
+
+    printf("-- Print to stderr via FILE* --\n");
+    dbms_output_print_file(stderr);
+
+    /* Generate output for collection examples */
+    EXEC SQL EXECUTE BEGIN
+        dbms_output.put_line('X');
+        dbms_output.put_line('Y');
+        dbms_output.put_line('Z');
+    END; END-EXEC;
+    dbms_output_check("put_line");
+
+    printf("-- Collect into linked list --\n");
+    struct dbms_output_node *list = NULL;
+    dbms_output_collect_list(&list);
+    for (struct dbms_output_node *n = list; n; n = n->next)
+        printf("%s\n", n->line);
+    dbms_output_free_list(list);
+
+    /* Generate again */
+    EXEC SQL EXECUTE BEGIN
+        dbms_output.put_line('Alpha');
+        dbms_output.put_line('Beta');
+    END; END-EXEC;
+    dbms_output_check("put_line");
+
+    printf("-- Collect into buffer --\n");
+    char buf[1024];
+    dbms_output_collect_buffer(buf, sizeof(buf));
+    printf("%s", buf);
+
+    /* Generate again */
+    EXEC SQL EXECUTE BEGIN
+        dbms_output.put_line('One');
+        dbms_output.put_line('Two');
+        dbms_output.put_line('Three');
+    END; END-EXEC;
+    dbms_output_check("put_line");
+
+    printf("-- Collect into array --\n");
+    char *lines[5];
+    size_t count = dbms_output_collect_array(lines, 5);
+    for (size_t i = 0; i < count; ++i) {
+        printf("%s\n", lines[i]);
+        free(lines[i]);
+    }
+
+    dbms_output_disable();
+    EXEC SQL COMMIT WORK RELEASE;
+    return 0;
+}
+

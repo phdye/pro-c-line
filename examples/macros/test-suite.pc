@@ -1,0 +1,146 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <sqlca.h>
+#include "varchar-macros.h"
+
+#define VERSION "varchar-macros-test 0.1"
+
+EXEC SQL BEGIN DECLARE SECTION;
+VARCHAR v1[50];
+VARCHAR v2[50];
+VARCHAR temp[50];
+char cbuf[100];
+EXEC SQL END DECLARE SECTION;
+
+int failures = 0;
+int verbose = 0;
+
+// Pytest-style assert with verbosity
+#define CHECK(name, expr) do { \
+    if (!(expr)) { \
+        printf("\nFAIL: %s\n", name); \
+        failures++; \
+    } else if (verbose) { \
+        printf("PASS: %s\n", name); \
+    } else { \
+        fputc('.', stdout); \
+        fflush(stdout); \
+    } \
+} while (0)
+
+void test_vset_and_vtoc() {
+    VSET(v1, "hello");
+    VTOC(v1, cbuf);
+    CHECK("VSET+VTOC round-trip", strcmp(cbuf, "hello") == 0);
+    CHECK("VSET sets correct length", v1.len == 5);
+}
+
+void test_vappend() {
+    VSET(v1, "foo");
+    VSET(v2, "bar");
+    VAPPEND(v1, v2);
+    VTOC(v1, cbuf);
+    CHECK("VAPPEND concatenates correctly", strcmp(cbuf, "foobar") == 0);
+}
+
+void test_vcmp() {
+    VSET(v1, "abc");
+    VSET(v2, "abc");
+    CHECK("VCMP equal", VCMP(v1, v2) == 0);
+
+    VSET(v2, "abd");
+    CHECK("VCMP less-than", VCMP(v1, v2) < 0);
+
+    VSET(v2, "aaa");
+    CHECK("VCMP greater-than", VCMP(v1, v2) > 0);
+}
+
+void test_case_mods() {
+    VSET(v1, "AbC");
+    VUPPER(v1);
+    VTOC(v1, cbuf);
+    CHECK("VUPPER", strcmp(cbuf, "ABC") == 0);
+
+    VLOWER(v1);
+    VTOC(v1, cbuf);
+    CHECK("VLOWER", strcmp(cbuf, "abc") == 0);
+}
+
+void test_trim() {
+    VSET(v1, "   spaced  ");
+    VTRIM(v1);
+    VTOC(v1, cbuf);
+    CHECK("VTRIM trims whitespace", strcmp(cbuf, "spaced") == 0);
+}
+
+void test_fill() {
+    VFILL(v1, 'X', 5);
+    VTOC(v1, cbuf);
+    CHECK("VFILL sets to X", strncmp(cbuf, "XXXXX", 5) == 0);
+    CHECK("VFILL length", v1.len == 5);
+}
+
+void test_copy_zero() {
+    VSET(v1, "CopyMe");
+    VCOPY(v2, v1);
+    VTOC(v2, cbuf);
+    CHECK("VCOPY round-trip", strcmp(cbuf, "CopyMe") == 0);
+
+    VZERO(v2);
+    int cleared = 1;
+    for (size_t i = 0; i < sizeof(v2.arr); i++) if (v2.arr[i] != 0) cleared = 0;
+    CHECK("VZERO clears array", cleared);
+}
+
+void test_clr() {
+    VSET(v1, "erase");
+    VCLR(v1);
+    CHECK("VCLR sets len=0", v1.len == 0);
+    int cleared = 1;
+    for (size_t i = 0; i < sizeof(v1.arr); i++) if (v1.arr[i] != 0) cleared = 0;
+    CHECK("VCLR clears arr", cleared);
+}
+
+void print_usage(const char *prog) {
+    printf("Usage:\n");
+    printf("  %s [--verbose | -v] [--help] [--version]\n\n", prog);
+    printf("Options:\n");
+    printf("  -v --verbose     Show individual test passes\n");
+    printf("  --help           Show this screen\n");
+    printf("  --version        Show version\n");
+}
+
+int main(int argc, char **argv) {
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "--help")) {
+            print_usage(argv[0]);
+            return 0;
+        } else if (!strcmp(argv[i], "--version")) {
+            printf("%s\n", VERSION);
+            return 0;
+        } else if (!strcmp(argv[i], "--verbose") || !strcmp(argv[i], "-v")) {
+            verbose = 1;
+        }
+    }
+
+    if (verbose)
+        printf("Running varchar macro test suite...\n");
+
+    test_vset_and_vtoc();
+    test_vappend();
+    test_vcmp();
+    test_case_mods();
+    test_trim();
+    test_fill();
+    test_copy_zero();
+    test_clr();
+
+    if (failures == 0) {
+        printf(verbose ? "\nAll tests passed.\n" : ".");
+    } else {
+        printf("\n%d test(s) failed.\n", failures);
+    }
+
+    return failures;
+}
