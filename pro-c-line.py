@@ -2,21 +2,22 @@
 
 """
 USAGE:
-  pc-line-mapper <line_number> <pc_file> <c_file> [--show[=N]]
+  pc-line-mapper <line_number> <pc_file> <c_file> [--show[=N]] [--debug]
 
 Given a C line number, maps it back to the responsible Pro*C (.pc) line number.
-Handles EXEC SQL INCLUDE and preprocessing complexities.
+Uses diff-based alignment to find inserted/replaced regions.
 
 Options:
   -h --help         Show this screen.
   --version         Show version.
   --show[=N]        Show N lines of context (default 3).
+  --debug           Print internal diff line mappings.
 """
 
 import argparse
-import re
+import difflib
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Dict
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Map C line number to responsible Pro*C line.")
@@ -24,38 +25,44 @@ def parse_arguments():
     parser.add_argument("pc_file", type=Path, help="Original .pc source file")
     parser.add_argument("c_file", type=Path, help="PROC-generated .c file")
     parser.add_argument("--show", nargs="?", const=3, type=int, help="Show N lines of context (default 3)")
+    parser.add_argument("--debug", action="store_true", help="Print debug info about line mappings")
     return parser.parse_args()
 
-def parse_c_file_for_line_mapping(c_path: Path):
-    """
-    Parses the .c file and returns a list of tuples:
-    (c_line_number, original_source_file, original_source_line)
-    based on #line or # <lineno> "filename" directives.
-    """
-    mappings = []
-    current_file = None
-    current_src_line = None
-    with c_path.open("r", encoding="utf-8") as f:
-        for i, line in enumerate(f, 1):
-            match = re.match(r'#\s*(\d+)\s+"([^"]+)"', line)
-            if match:
-                current_src_line = int(match.group(1))
-                current_file = match.group(2)
-            mappings.append((i, current_file, current_src_line))
-            if current_src_line is not None:
-                current_src_line += 1
-    return mappings
+def build_line_map(pc_lines, c_lines, debug=False):
+    matcher = difflib.SequenceMatcher(None, pc_lines, c_lines, autojunk=False)
+    c_to_pc = {}
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if debug:
+            print(f"{tag:>7}: pc[{i1}:{i2}] -> c[{j1}:{j2}]")
+        if tag == 'equal':
+            for offset in range(j2 - j1):
+                c_to_pc[j1 + offset + 1] = i1 + offset + 1
+        elif tag == 'replace':
+            for k in range(j1, j2):
+                c_to_pc[k + 1] = i1 + 1 if i1 < len(pc_lines) else len(pc_lines)
+        elif tag == 'insert':
+            for k in range(j1, j2):
+                c_to_pc[k + 1] = None
+        elif tag == 'delete':
+            continue
+        # Insert dummy span for early C lines before any mapped region
+    first_c_line = min(c_to_pc.keys()) if c_to_pc else 1
+    for i in range(1, first_c_line):
+        c_to_pc[i] = 0
+    return c_to_pc
 
-def find_pc_line_number(c_line: int, mappings: list[tuple[int, Optional[str], Optional[int]]], target_pc: Path) -> Optional[int]:
-    """
-    Given a line in .c and the mappings, walk backwards to find the most
-    recent #line directive mapping it back to the .pc file.
-    """
-    for i in range(c_line - 1, -1, -1):
-        mapped_c_line, src_file, src_line = mappings[i]
-        if src_file and Path(src_file).resolve() == target_pc.resolve():
-            return src_line + (c_line - mapped_c_line)
-    return None
+def map_c_line_to_pc_line(c_line, pc_lines, c_lines, debug=False):
+    if c_line < 1:
+        return "Line number must be positive."
+    if c_line > len(c_lines):
+        return f"Line {c_line} is beyond the end of the C code."
+    line_map = build_line_map(pc_lines, c_lines, debug=debug)
+    if c_line not in line_map:
+        first_c_line = min(line_map.keys()) if line_map else 1
+        return "0" if c_line < first_c_line else None
+    if line_map[c_line] is None:
+        return None
+    return line_map[c_line]
 
 def print_context_lines(file: Path, center_line: int, context: int):
     lines = file.read_text(encoding="utf-8").splitlines()
@@ -71,13 +78,21 @@ def main():
     pc_path = args.pc_file
     c_path = args.c_file
     show_context = args.show
+    debug = args.debug
 
-    mappings = parse_c_file_for_line_mapping(c_path)
-    pc_line = find_pc_line_number(c_line, mappings, pc_path)
+    pc_lines = pc_path.read_text(encoding="utf-8").splitlines()
+    c_lines = c_path.read_text(encoding="utf-8").splitlines()
 
-    if pc_line is not None:
+    pc_line = map_c_line_to_pc_line(c_line, pc_lines, c_lines, debug=debug)
+
+    if isinstance(pc_line, str):
+        if pc_line == "0":
+            print(f"C line {c_line} maps to {pc_path.name}:0")
+        else:
+            print(pc_line)
+    elif isinstance(pc_line, int):
         print(f"C line {c_line} maps to {pc_path.name}:{pc_line}")
-        if show_context is not None:
+        if show_context is not None and pc_line > 0:
             print("\nContext:")
             print_context_lines(pc_path, pc_line, show_context)
     else:
